@@ -59,7 +59,7 @@ duckdb.sql("""SELECT period_start, series, value FROM 'hf://datasets/alreadyopen
               WHERE "table" = '1.2M' AND series LIKE 'Class A%' ORDER BY period_start DESC LIMIT 6""")
 ```
 
-For web maps, `spacetime-rvd.json`, `spacetime-tps.json`, `spacetime-lr.json` and `areas.geojson` are in the bucket
+For web maps, `spacetime-map.json` (RVD), `spacetime-tps.json`, `spacetime-lr.json` and `areas.geojson` are in the bucket
 [alreadyopen/hk-property](https://huggingface.co/buckets/alreadyopen/hk-property). A copy is mirrored to
 [Kaggle](https://www.kaggle.com/datasets/helenkwok/hk-property) after every bake.
 

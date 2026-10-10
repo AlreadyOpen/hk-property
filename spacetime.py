@@ -19,7 +19,7 @@ Across places (Getis-Ord Gi* each period, then the same categories on each place
 7 office areas (3 nearest), lr across the 10 districts (3 nearest), tps across the 39 estates (8 nearest). Results from fewer
 than 30 places carry weak = true: read them as descriptive.
 Writes spacetime.parquet (one row per series and period), spacetime.json (one summary per series), and for web maps
-spacetime-{rvd,tps,lr}.json (each source's series on its own period axis) and areas.geojson (the area shapes).
+spacetime-map.json (rvd), spacetime-tps.json and spacetime-lr.json (each source's series on its own period axis) and areas.geojson (the area shapes).
 Self-check: python3 spacetime.py"""
 import json, math, os, re
 import duckdb
@@ -192,7 +192,7 @@ def run(rvd_parquet, areas_geojsonl, out_dir, tps_parquet=None, lr_parquet=None)
     for src, (periods, (s, o, mapped)) in parts.items():
         summary += s; rows += o
         json.dump({'source': src, 'periods': [p.isoformat()[:7] for p in periods], 'step': 'quarter' if src == 'tps' else 'month', 'series': mapped},
-                  open(os.path.join(out_dir, f'spacetime-{src}.json'), 'w'), separators=(',', ':'), ensure_ascii=False)
+                  open(os.path.join(out_dir, 'spacetime-map.json' if src == 'rvd' else f'spacetime-{src}.json'), 'w'), separators=(',', ':'), ensure_ascii=False)
     json.dump({'method': __doc__.split('Writes')[0].strip(), 'z': Z, 'sources': {k: [p[0][0].isoformat(), p[0][-1].isoformat()] for k, p in parts.items()}, 'series': summary},
               open(os.path.join(out_dir, 'spacetime.json'), 'w'), indent=1, ensure_ascii=False)
     with open(os.path.join(out_dir, 'areas.geojson'), 'w') as f:

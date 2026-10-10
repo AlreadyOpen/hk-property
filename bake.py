@@ -15,7 +15,7 @@ Writes, in data/out/:
     rate, date, credit level. Sales to sitting tenants at formula prices, not market sales
   - lr.parquet: the Land Registry's monthly statistics (data.gov.hk hk-lr-data4-landreg, January 2021 on), every row: deeds by
     type, agreements for sale and purchase by its 10 districts, residential / non-residential, primary / secondary, price bands
-  - spacetime.parquet, spacetime.json, spacetime-{rvd,tps,lr}.json, areas.geojson: the space-time analysis (spacetime.py)
+  - spacetime.parquet, spacetime.json, spacetime-map.json (rvd), spacetime-tps.json, spacetime-lr.json, areas.geojson: the space-time analysis (spacetime.py)
   - index.json: counts, sizes, source
 Usage: python3 bake.py"""
 import csv, datetime, io, json, os, re, shutil, urllib.parse, urllib.request
@@ -171,7 +171,7 @@ def main():
     idx = {'built': datetime.datetime.now().isoformat(timespec='seconds'),
            'counts': {'tables': len(tables), 'values': len(rows), 'raw_files': len(files), 'areas': n_areas, 'tps_sales': n_tps, 'lr_rows': n_lr, 'lr_months': n_lr_months, 'spacetime_series': st['series'], **{k: v for k, v in st.items() if k.startswith('series_')}},
            'latest_month': c.execute(f"SELECT max(period_start) FROM '{pq}' WHERE freq = 'M'").fetchone()[0].isoformat(),
-           'MB': {f: round(os.path.getsize(os.path.join(sources.OUT, f)) / 1e6, 2) for f in ('rvd.parquet', 'tps.parquet', 'lr.parquet', 'areas.parquet', 'spacetime.parquet', 'spacetime.json', 'spacetime-rvd.json', 'spacetime-tps.json', 'spacetime-lr.json', 'areas.geojson')},
+           'MB': {f: round(os.path.getsize(os.path.join(sources.OUT, f)) / 1e6, 2) for f in ('rvd.parquet', 'tps.parquet', 'lr.parquet', 'areas.parquet', 'spacetime.parquet', 'spacetime.json', 'spacetime-map.json', 'spacetime-tps.json', 'spacetime-lr.json', 'areas.geojson')},
            'source': 'Rating and Valuation Department, Property Market Statistics; Housing Authority, TPS sale transactions; Land Registry, monthly statistics (all data.gov.hk); area shapes from RVD layers on the CSDI Portal'}
     json.dump(idx, open(os.path.join(sources.OUT, 'index.json'), 'w'), indent=1)
     print(json.dumps(idx))

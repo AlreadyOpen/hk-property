@@ -45,7 +45,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PUBLISH_FORCE: ${{ inputs.force && '1' || '0' }}
-        run: mkdir -p status && python publish.py | tee status/last-run.json   # git keeps no empty folder: mkdir first
+        run: set -o pipefail; mkdir -p status && python publish.py | tee status/last-run.json   # git keeps no empty folder: mkdir first
       # Kaggle mirror of everything published (Helen's account). Its own step, allowed to fail: never blocks Hugging Face.
       - name: mirror to Kaggle
         continue-on-error: true
