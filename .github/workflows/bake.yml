@@ -1,9 +1,9 @@
-# Bake and publish to Hugging Face (bake.py, publish.py). Manual only in the template: add a schedule in your copy, e.g.
-#   schedule:
-#     - cron: '30 19 * * *'          # 03:30 HKT daily
+# Weekly bake of RVD's property market statistics and the space-time analysis, published to Hugging Face (publish.py).
 # Each run commits status/last-run.json: GitHub turns schedules off after 60 days with no commits.
 name: bake
 on:
+  schedule:
+    - cron: '30 20 * * 1'          # Tuesdays 04:30 HKT (RVD publishes monthly figures early each month)
   workflow_dispatch:
     inputs:
       force:
@@ -35,7 +35,7 @@ jobs:
           key: cache-${{ github.run_id }}
           restore-keys: cache-
       - name: bake
-        run: python bake.py
+        run: python spacetime.py && python bake.py   # the analysis self-check first
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
         if: always()
         with:

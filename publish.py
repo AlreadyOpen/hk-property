@@ -8,18 +8,22 @@ import json, os
 from huggingface_hub import HfApi, batch_bucket_files, create_bucket
 import manifest, sources
 
-REPO = 'alreadyopen/REPLACE-ME'
-DATASET_FILES = ['index.json']                                         # e.g. the Parquet files
-BUCKET_FILES = ['index.json']                                          # e.g. the PMTiles, JSON tiles
-KAGGLE = ('helenkwok/REPLACE-ME', 'AlreadyOpen: REPLACE ME')            # mirrored by kaggle_mirror.py (title 6-50 chars)
+REPO = 'alreadyopen/hk-property'
+DATASET_FILES = ['rvd.parquet', 'tables.json', 'areas.parquet', 'spacetime.parquet', 'spacetime.json', 'raw', 'index.json']   # raw: a folder
+BUCKET_FILES = ['spacetime-map.json', 'areas.geojson', 'spacetime.json', 'index.json']   # read by /map
+KAGGLE = ('helenkwok/hk-property', 'AlreadyOpen HK property market statistics')            # mirrored by kaggle_mirror.py (title 6-50 chars)
 
 def main():
     o = lambda f: os.path.join(sources.OUT, f); idx = json.load(open(o('index.json')))
-    m = manifest.manifest(sources.OUT, sorted(set(DATASET_FILES + BUCKET_FILES)), idx['counts'], idx['built'])
+    files = []
+    for f in sorted(set(DATASET_FILES + BUCKET_FILES)):                  # a folder: every file in it
+        files += [f'{f}/{x}' for x in sorted(os.listdir(o(f)))] if os.path.isdir(o(f)) else [f]
+    m = manifest.manifest(sources.OUT, files, idx['counts'], idx['built'])
     manifest.gate(m, f'https://huggingface.co/buckets/{REPO}/resolve/manifest.json')
     json.dump(m, open(o('manifest.json'), 'w'), indent=1)
     api = HfApi(); api.create_repo(REPO, repo_type='dataset', exist_ok=True)
     for f in DATASET_FILES + ['manifest.json']:
+        if os.path.isdir(o(f)): api.upload_folder(folder_path=o(f), path_in_repo=f, repo_id=REPO, repo_type='dataset', commit_message=f"{f}/: bake of {idx['built']}"); continue
         api.upload_file(path_or_fileobj=o(f), path_in_repo=f, repo_id=REPO, repo_type='dataset', commit_message=f"{f}: bake of {idx['built']}")
     api.upload_file(path_or_fileobj=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hf', 'README.md'), path_in_repo='README.md', repo_id=REPO, repo_type='dataset', commit_message='card')
     create_bucket(REPO, private=False, exist_ok=True)

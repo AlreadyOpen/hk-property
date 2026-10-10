@@ -1,3 +1,4 @@
 [
- {"name": "Example dataset (replace)", "owner": "Example Owner", "url": "https://example.org/data.csv", "licence": "https://example.org/terms", "used_by": "bake.py"}
+ {"name": "Property Market Statistics (data.gov.hk hk-rvd-tsinfo_rvd-property-market-statistics), every CSV and XLS table", "owner": "Rating and Valuation Department", "url": "https://data.gov.hk/en-data/dataset/hk-rvd-tsinfo_rvd-property-market-statistics", "licence": "https://data.gov.hk/en/terms-and-conditions", "used_by": "bake.py"},
+ {"name": "RVD private domestic and private office stock and vacancy by district, area shapes (CSDI rvd_rcd_1631695369038_14075, rvd_rcd_1631762126297_43900)", "owner": "Rating and Valuation Department", "url": "https://portal.csdi.gov.hk/server/rest/services/common/rvd_rcd_1631762126297_43900/FeatureServer/0", "licence": "https://portal.csdi.gov.hk/csdi-webpage/doc/TNC", "used_by": "bake.py (areas.parquet, areas.geojson)"}
 ]
