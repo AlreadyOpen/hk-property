@@ -1,4 +1,30 @@
 [
- {"name": "Property Market Statistics (data.gov.hk hk-rvd-tsinfo_rvd-property-market-statistics), every CSV and XLS table", "owner": "Rating and Valuation Department", "url": "https://data.gov.hk/en-data/dataset/hk-rvd-tsinfo_rvd-property-market-statistics", "licence": "https://data.gov.hk/en/terms-and-conditions", "used_by": "bake.py"},
- {"name": "RVD private domestic and private office stock and vacancy by district, area shapes (CSDI rvd_rcd_1631695369038_14075, rvd_rcd_1631762126297_43900)", "owner": "Rating and Valuation Department", "url": "https://portal.csdi.gov.hk/server/rest/services/common/rvd_rcd_1631762126297_43900/FeatureServer/0", "licence": "https://portal.csdi.gov.hk/csdi-webpage/doc/TNC", "used_by": "bake.py (areas.parquet, areas.geojson)"}
+ {
+  "name": "Property Market Statistics (data.gov.hk hk-rvd-tsinfo_rvd-property-market-statistics), every CSV and XLS table",
+  "owner": "Rating and Valuation Department",
+  "url": "https://data.gov.hk/en-data/dataset/hk-rvd-tsinfo_rvd-property-market-statistics",
+  "licence": "https://data.gov.hk/en/terms-and-conditions",
+  "used_by": "bake.py"
+ },
+ {
+  "name": "RVD private domestic and private office stock and vacancy by district, area shapes (CSDI rvd_rcd_1631695369038_14075, rvd_rcd_1631762126297_43900)",
+  "owner": "Rating and Valuation Department",
+  "url": "https://portal.csdi.gov.hk/server/rest/services/common/rvd_rcd_1631762126297_43900/FeatureServer/0",
+  "licence": "https://portal.csdi.gov.hk/csdi-webpage/doc/TNC",
+  "used_by": "bake.py (areas.parquet, areas.geojson)"
+ },
+ {
+  "name": "Tenants Purchase Scheme sale transactions (data.gov.hk hk-housing-tpssale-tpssale)",
+  "owner": "Housing Authority",
+  "url": "https://data.housingauthority.gov.hk/dataset/hass/tps_sale_transactions_en.json",
+  "licence": "https://data.gov.hk/en/terms-and-conditions",
+  "used_by": "bake.py (tps.parquet), spacetime.py"
+ },
+ {
+  "name": "Land Registry monthly statistics, January 2021 on (data.gov.hk hk-lr-data4-landreg)",
+  "owner": "Land Registry",
+  "url": "https://data.gov.hk/en-data/dataset/hk-lr-data4-landreg",
+  "licence": "https://data.gov.hk/en/terms-and-conditions",
+  "used_by": "bake.py (lr.parquet), spacetime.py"
+ }
 ]

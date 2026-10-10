@@ -9,8 +9,8 @@ from huggingface_hub import HfApi, batch_bucket_files, create_bucket
 import manifest, sources
 
 REPO = 'alreadyopen/hk-property'
-DATASET_FILES = ['rvd.parquet', 'tables.json', 'areas.parquet', 'spacetime.parquet', 'spacetime.json', 'raw', 'index.json']   # raw: a folder
-BUCKET_FILES = ['spacetime-map.json', 'areas.geojson', 'spacetime.json', 'index.json']   # read by /map
+DATASET_FILES = ['rvd.parquet', 'tps.parquet', 'lr.parquet', 'tables.json', 'areas.parquet', 'spacetime.parquet', 'spacetime.json', 'raw', 'index.json']   # raw: a folder
+BUCKET_FILES = ['spacetime-rvd.json', 'spacetime-tps.json', 'spacetime-lr.json', 'areas.geojson', 'spacetime.json', 'index.json']   # read by /map
 KAGGLE = ('helenkwok/hk-property', 'AlreadyOpen HK property market statistics')            # mirrored by kaggle_mirror.py (title 6-50 chars)
 
 def main():

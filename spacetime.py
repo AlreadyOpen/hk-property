@@ -1,23 +1,25 @@
-"""Space-time analysis of RVD rents and prices (after Esri's space-time pattern mining: a space-time cube, Mann-Kendall trends,
-emerging hot spot categories, time series clustering), on the monthly tables of rvd.parquet:
-  1.1M / 1.2M domestic rents / prices by class (A-E) in 3 regions (Hong Kong, Kowloon, New Territories)
-  2.1M / 2.2M office rents / prices by grade (A-C) in 7 office areas
-  3.1M retail and 4.1M flatted factory rents and prices in the 3 regions
-Locations are RVD's own areas (areas.parquet); 'Kowloon Bay / Kwun Tong' is drawn with the Kwun Tong district shape.
+"""Space-time analysis of Hong Kong property figures (after Esri's space-time pattern mining: a space-time cube, Mann-Kendall
+trends, emerging hot spot categories, time series clustering), on three open sources:
+  rvd  RVD's monthly rents and prices (rvd.parquet): domestic by class (A-E) in 3 regions, offices by grade (A-C) in 7 office
+       areas, retail and flatted factories in the 3 regions; since 1999; drawn on RVD's own areas ('Kowloon Bay / Kwun Tong'
+       with the Kwun Tong district shape)
+  tps  Housing Authority Tenants Purchase Scheme sales (tps.parquet): each estate's median price per m2 by quarter, 39 estates,
+       since 1998 (sales are sparse after 2020, so quarters, not months). Sales to sitting tenants at formula prices, not market
+  lr   Land Registry agreements for sale and purchase of building units by its 10 districts (lr.parquet): monthly deals, value
+       and average deal since 2021; drawn on RVD's district shapes ('Tsuen Wan' = Tsuen Wan + Kwai Tsing: our assumption)
 
-A. Per series (one place, one property class, one measure), against its own past (3 regions are too few places for a
-   neighbourhood statistic):
-   - each month's local z: the value against the mean and spread of the 36 months before it; significant when |z| >= 1.96
-   - Esri's emerging hot spot categories applied to those significant months (new, consecutive, intensifying, persistent,
-     diminishing, sporadic, oscillating, historical; for highs and lows), with a Mann-Kendall test on the z series
-   - Mann-Kendall trend of the values over the whole series and over the last 36 months
-   - time series clustering: each series' year-on-year change, z-normalised, grouped by shape (k-means, k = 4, fixed start;
-     series covering under half the months get cluster -1)
-B. Office rents only: Getis-Ord Gi* across the 7 office areas each month (neighbours = the 3 nearest area centres, the area
-   itself included), then the same categories on each area's Gi* series. WEAK: 7 places are far below the ~30 Esri advises,
-   so every B result carries weak = true and should be read as descriptive.
-Writes spacetime.parquet (one row per series and month), spacetime.json (one summary per series), and for web maps
-spacetime-map.json (every series on one month axis) and areas.geojson (the area shapes).
+Per series (one place, one measure):
+  - local z each period: the value against the periods before it (36 months for rvd, 24 for lr, 12 quarters for tps),
+    significant when |z| >= 1.96; Esri's emerging hot spot categories (new, consecutive, intensifying, persistent,
+    diminishing, sporadic, oscillating, historical; hot or cold) on those significant periods: each place against its own past
+  - Mann-Kendall trend over the whole series and over the recent window
+  - time series clustering: each series' change on a year before, z-normalised, grouped by shape (k-means, k = 4, fixed
+    start; series covering under half the periods get cluster -1)
+Across places (Getis-Ord Gi* each period, then the same categories on each place's Gi* series): rvd office rents across the
+7 office areas (3 nearest), lr across the 10 districts (3 nearest), tps across the 39 estates (8 nearest). Results from fewer
+than 30 places carry weak = true: read them as descriptive.
+Writes spacetime.parquet (one row per series and period), spacetime.json (one summary per series), and for web maps
+spacetime-{rvd,tps,lr}.json (each source's series on its own period axis) and areas.geojson (the area shapes).
 Self-check: python3 spacetime.py"""
 import json, math, os, re
 import duckdb
@@ -39,12 +41,12 @@ def mann_kendall(x):
     z = 0.0 if s == 0 else (s - np.sign(s)) / math.sqrt(var)
     return round(float(s / (n * (n - 1) / 2)), 4), round(float(z), 3), round(float(math.erfc(abs(z) / math.sqrt(2))), 5)
 
-def local_z(v):
-    """each value against the WINDOW values before it (needs 12 of them); NaN where not computable"""
+def local_z(v, window=WINDOW, least=12):
+    """each value against the `window` values before it (needs `least` of them); NaN where not computable"""
     out = np.full(len(v), np.nan)
     for i in range(len(v)):
-        w = v[max(0, i - WINDOW):i]; w = w[~np.isnan(w)]
-        if len(w) >= 12 and not np.isnan(v[i]) and w.std() > 0: out[i] = (v[i] - w.mean()) / w.std()
+        w = v[max(0, i - window):i]; w = w[~np.isnan(w)]
+        if len(w) >= least and not np.isnan(v[i]) and w.std() > 0: out[i] = (v[i] - w.mean()) / w.std()
     return out
 
 def category(z):
@@ -95,65 +97,111 @@ def parse(table, series):
     if m := re.fullmatch(r'(Rents|Prices) \((.+)\)', series): return prop, m[1][:-1].lower(), 'all', m[2].strip()
     return None
 
-def run(rvd_parquet, areas_geojsonl, out_dir):
-    c = duckdb.connect()
-    ids = ', '.join(f"'{t}'" for t in TABLES)
+def analyse(source, cube, periods, lag, window, least, meta, gi_groups=None, centre=None, k_nbrs=3):
+    """the analysis of one source. cube: {key: values on `periods`}; lag: periods in a year; window/least: the local z window;
+    meta(key) -> the series' descriptive fields; gi_groups(key) -> the group whose places are compared by Gi* (None: no Gi*);
+    centre(key) -> (lon, lat) of its place. Returns (summaries, rows for spacetime.parquet, series for the map file)."""
+    keys = sorted(cube); zs = {k: local_z(cube[k], window, least) for k in keys}
+    growth = {k: np.concatenate([np.full(lag, np.nan), cube[k][lag:] / np.where(cube[k][:-lag] == 0, np.nan, cube[k][:-lag]) - 1]) for k in keys}
+    dense = [k for k in keys if (~np.isnan(growth[k])).mean() >= 0.5]
+    X = np.nan_to_num(np.array([(growth[k] - np.nanmean(growth[k])) / (np.nanstd(growth[k]) or 1) for k in dense])) if dense else None
+    lab = dict(zip(dense, kmeans(X))) if len(dense) >= 4 else {}
+    gi, b_cat, places = {}, {}, {}
+    if gi_groups:
+        groups = {}
+        for k in keys:
+            g = gi_groups(k)
+            if g is not None: groups.setdefault(g, []).append(k)
+        for g, ks in groups.items():
+            if len(ks) < 4: continue
+            cen = np.array([centre(k) for k in ks]) * [math.cos(math.radians(22.3)), 1]   # lon scaled to km-like units at HK
+            d = ((cen[:, None] - cen[None]) ** 2).sum(2); nbrs = [list(np.argsort(d[i])[:min(k_nbrs, len(ks))]) for i in range(len(ks))]
+            m = np.array([gi_star(np.array([cube[k][t] for k in ks]), nbrs) for t in range(len(periods))]).T
+            for i, k in enumerate(ks): gi[k] = m[i]; b_cat[k] = category(m[i]); places[k] = len(ks)
+    summary, out, mapped = [], [], []
+    r3 = lambda a: [None if np.isnan(x) else round(float(x), 3) for x in a]
+    for k in keys:
+        v, z = cube[k], zs[k]; valid = np.flatnonzero(~np.isnan(v)); last = valid[-1]; md = meta(k); sid = f"{source}|{md['series']}"
+        yoy = [None if j < lag or np.isnan(v[j]) or np.isnan(v[j - lag]) or v[j - lag] == 0 else round(float(v[j] / v[j - lag] - 1), 4) for j in range(len(periods))]
+        s = {**md, 'series': sid, 'source': source, 'first': periods[valid[0]].isoformat(), 'last': periods[last].isoformat(), 'latest': float(v[last]), 'latest_yoy': yoy[last],
+             'trend_all': mann_kendall(list(v)), 'trend_recent': mann_kendall(list(v[max(0, last - window + 1):last + 1])),
+             'pattern': category(z), 'cluster': int(lab.get(k, -1)),
+             'hotspot': {'pattern': b_cat[k], 'places': places[k], 'weak': places[k] < 30} if k in b_cat else None}
+        summary.append(s); mapped.append({**s, 'values': r3(v), 'local_z': r3(z), 'gi_z': r3(gi[k]) if k in gi else None})
+        for j in valid: out.append((source, sid, md.get('place'), periods[j], float(v[j]), yoy[j], None if np.isnan(z[j]) else round(float(z[j]), 3),
+                                    0 if np.isnan(z[j]) else int(z[j] >= Z) - int(z[j] <= -Z), None if k not in gi or np.isnan(gi[k][j]) else round(float(gi[k][j]), 3)))
+    return summary, out, mapped
+
+def shapes_of(areas_geojsonl):
+    """{area name: (lon, lat) of its outer ring's mean}"""
+    out = {}
+    for line in open(areas_geojsonl):
+        f = json.loads(line); g = f['geometry']; ring = np.array(g['coordinates'][0] if g['type'] == 'Polygon' else g['coordinates'][0][0])
+        out[f['properties']['area']] = ring[:, :2].mean(0)
+    return out
+
+def rvd(rvd_parquet, cen):
+    c = duckdb.connect(); ids = ', '.join(f"'{t}'" for t in TABLES)
     rows = c.execute(f"""SELECT "table", series, period_start, value FROM '{rvd_parquet}' WHERE "table" IN ({ids}) ORDER BY "table", series, period_start""").fetchall()
-    months = sorted({r[2] for r in rows}); mi = {m: i for i, m in enumerate(months)}
-    cube = {}
+    months = sorted({r[2] for r in rows}); mi = {m: i for i, m in enumerate(months)}; cube = {}
     for t, s, p, v in rows:
         k = parse(t, s)
-        if not k: continue
-        cube.setdefault(k, np.full(len(months), np.nan))[mi[p]] = np.nan if v is None else v
+        if k: cube.setdefault(k, np.full(len(months), np.nan))[mi[p]] = np.nan if v is None else v
     cube = {k: v for k, v in cube.items() if (~np.isnan(v)).sum() >= 24}
-    # A: per series
-    summary, out = [], []
-    keys = sorted(cube)
-    zs = {k: local_z(cube[k]) for k in keys}
-    # clustering on the shape of the cycle: each series' year-on-year change, z-normalised over its own months, a missing month counts as the series' mean (0); series
-    # covering under half the months are left out (cluster -1)
-    growth = {k: np.concatenate([np.full(12, np.nan), cube[k][12:] / cube[k][:-12] - 1]) for k in keys}   # year-on-year change
-    dense = [k for k in keys if (~np.isnan(growth[k])).mean() >= 0.5]
-    X = np.nan_to_num(np.array([(growth[k] - np.nanmean(growth[k])) / (np.nanstd(growth[k]) or 1) for k in dense]))
-    lab = dict(zip(dense, kmeans(X))) if len(dense) >= 4 else {}
-    # B: office rents, Gi* across the 7 areas per grade
-    shapes = {}
-    for line in open(areas_geojsonl):
-        f = json.loads(line); ring = np.array(f['geometry']['coordinates'][0] if f['geometry']['type'] == 'Polygon' else f['geometry']['coordinates'][0][0])
-        shapes[f['properties']['area']] = ring[:, :2].mean(0)
-    gi, b_cat = {}, {}
-    for grade in ('Grade A', 'Grade B', 'Grade C'):
-        ks = [k for k in keys if k[0] == 'office' and k[1] == 'rent' and k[2] == grade]
-        if len(ks) < 4: continue
-        cen = np.array([shapes[AREA_SHAPE.get(k[3], k[3])] for k in ks])
-        d = ((cen[:, None] - cen[None]) ** 2).sum(2); nbrs = [list(np.argsort(d[i])[:3]) for i in range(len(ks))]
-        g = np.array([gi_star(np.array([cube[k][t] for k in ks]), nbrs) for t in range(len(months))]).T
-        for i, k in enumerate(ks): gi[k] = g[i]; b_cat[k] = category(g[i])
-    for i, k in enumerate(keys):
-        v, z = cube[k], zs[k]; prop, measure, cls, area = k; sid = f'{prop}|{measure}|{cls}|{area}'
-        valid = np.flatnonzero(~np.isnan(v)); last = valid[-1]
-        yoy = [None if j < 12 or np.isnan(v[j]) or np.isnan(v[j - 12]) or v[j - 12] == 0 else round(float(v[j] / v[j - 12] - 1), 4) for j in range(len(months))]
-        s = {'series': sid, 'property': prop, 'measure': measure, 'unit': UNITS[measure], 'class_grade': cls, 'area': area, 'shape': AREA_SHAPE.get(area, area),
-             'first': months[valid[0]].isoformat(), 'last': months[last].isoformat(), 'latest': float(v[last]), 'latest_yoy': yoy[last],
-             'trend_all': mann_kendall(list(v)), 'trend_36m': mann_kendall(list(v[max(0, last - 35):last + 1])),
-             'pattern': category(z), 'cluster': int(lab.get(k, -1)),
-             'hotspot_b': {'pattern': b_cat[k], 'weak': True, 'places': 7} if k in b_cat else None}
-        summary.append(s)
-        for j in valid: out.append((sid, prop, measure, cls, area, months[j], float(v[j]), yoy[j], None if np.isnan(z[j]) else round(float(z[j]), 3),
-                                    0 if np.isnan(z[j]) else int(z[j] >= Z) - int(z[j] <= -Z), None if k not in gi or np.isnan(gi[k][j]) else round(float(gi[k][j]), 3)))
-    json.dump({'method': __doc__.split('Writes')[0].strip(), 'window_months': WINDOW, 'z': Z, 'months': [months[0].isoformat(), months[-1].isoformat()],
-               'clusters': len(set(lab.values())), 'series': summary}, open(os.path.join(out_dir, 'spacetime.json'), 'w'), indent=1, ensure_ascii=False)
-    # for web maps: every series' monthly values, local z and Gi* on one month axis, and the area shapes as GeoJSON
-    r = lambda a: [None if np.isnan(x) else round(float(x), 3) for x in a]
-    json.dump({'months': [m.isoformat()[:7] for m in months], 'series': [{**s, 'values': r(cube[k]), 'local_z': r(zs[k]), 'gi_z': r(gi[k]) if k in gi else None}
-               for s, k in zip(summary, keys)]}, open(os.path.join(out_dir, 'spacetime-map.json'), 'w'), separators=(',', ':'), ensure_ascii=False)
+    meta = lambda k: {'series': '|'.join(k), 'property': k[0], 'measure': k[1], 'unit': UNITS[k[1]], 'class_grade': k[2], 'place': k[3], 'shape': [AREA_SHAPE.get(k[3], k[3])]}
+    return months, analyse('rvd', cube, months, 12, WINDOW, 12, meta,
+                           gi_groups=lambda k: k[2] if k[0] == 'office' and k[1] == 'rent' else None, centre=lambda k: cen[AREA_SHAPE.get(k[3], k[3])])
+
+def tps(tps_parquet):
+    """HA Tenants Purchase Scheme sales: each estate's median price per m2 per quarter (sales are sparse after 2020)"""
+    c = duckdb.connect()
+    rows = c.execute(f"""SELECT estate_name, district_group, avg(lat), avg(lon), date_trunc('quarter', assignment_date) q, median(price_per_m2), count(*), median(discount_rate)
+                         FROM '{tps_parquet}' WHERE price_per_m2 > 0 GROUP BY ALL ORDER BY 1, q""").fetchall()
+    qs = sorted({r[4] for r in rows}); qi = {q: i for i, q in enumerate(qs)}; cube, info, n = {}, {}, {}
+    for est, grp, lat, lon, q, ppm, cnt, disc in rows:
+        cube.setdefault(est, np.full(len(qs), np.nan))[qi[q]] = ppm; info[est] = (grp, lon, lat); n[est] = n.get(est, 0) + cnt
+    cube = {k: v for k, v in cube.items() if (~np.isnan(v)).sum() >= 16}
+    meta = lambda k: {'series': k, 'property': 'TPS flats (sales to sitting tenants, formula prices)', 'measure': 'median price', 'unit': 'HK$/m² (saleable)',
+                      'class_grade': 'all', 'place': k, 'district_group': info[k][0], 'lon': info[k][1], 'lat': info[k][2], 'sales': n[k]}
+    return qs, analyse('tps', cube, qs, 4, 12, 8, meta, gi_groups=lambda k: 'estates', centre=lambda k: info[k][1:], k_nbrs=8)
+
+LR_SHAPES = {'Hong Kong': ['HONG KONG'], 'Kowloon': ['KOWLOON'], 'Island': ['Islands'], 'North': ['North'], 'Sai Kung': ['Sai Kung'], 'Shatin': ['Sha Tin'],
+             'Tai Po': ['Tai Po'], 'Tsuen Wan': ['Tsuen Wan', 'Kwai Tsing'], 'Tuen Mun': ['Tuen Mun'], 'Yuen Long': ['Yuen Long']}
+LR_NOTE = {'Tsuen Wan': "drawn as Tsuen Wan + Kwai Tsing districts: our assumption, the Land Registry publishes no district shapes"}
+
+def lr(lr_parquet, cen):
+    """Land Registry: agreements for sale and purchase of building units by its 10 districts, monthly (count, value, average)"""
+    c = duckdb.connect()
+    rows = c.execute(f"""SELECT regexp_extract(description, 'Number of (.+) transactions for ASP building units', 1) d, period_start, units, consideration_hkd_m
+                         FROM '{lr_parquet}' WHERE description LIKE 'Number of % transactions for ASP building units' ORDER BY 1, 2""").fetchall()
+    ms = sorted({r[1] for r in rows}); mi = {m: i for i, m in enumerate(ms)}; cube = {}
+    for d, p, u, v in rows:
+        for meas, x in (('deals', u), ('value', v), ('average deal', v / u if u and v is not None else None)):
+            cube.setdefault((d, meas), np.full(len(ms), np.nan))[mi[p]] = np.nan if x is None else x
+    unit = {'deals': 'agreements a month', 'value': 'HK$ million a month', 'average deal': 'HK$ million per agreement'}
+    meta = lambda k: {'series': f'{k[1]}|{k[0]}', 'property': 'building units (all; agreements for sale and purchase)', 'measure': k[1], 'unit': unit[k[1]], 'class_grade': 'all',
+                      'place': k[0], 'shape': LR_SHAPES.get(k[0], [k[0]]), 'shape_note': LR_NOTE.get(k[0])}
+    centre = lambda k: np.mean([cen[s] for s in LR_SHAPES.get(k[0], [k[0]])], 0)
+    return ms, analyse('lr', cube, ms, 12, 24, 12, meta, gi_groups=lambda k: k[1], centre=centre)
+
+def run(rvd_parquet, areas_geojsonl, out_dir, tps_parquet=None, lr_parquet=None):
+    cen = shapes_of(areas_geojsonl); parts = {'rvd': rvd(rvd_parquet, cen)}
+    if tps_parquet: parts['tps'] = tps(tps_parquet)
+    if lr_parquet: parts['lr'] = lr(lr_parquet, cen)
+    summary, rows = [], []
+    for src, (periods, (s, o, mapped)) in parts.items():
+        summary += s; rows += o
+        json.dump({'source': src, 'periods': [p.isoformat()[:7] for p in periods], 'step': 'quarter' if src == 'tps' else 'month', 'series': mapped},
+                  open(os.path.join(out_dir, f'spacetime-{src}.json'), 'w'), separators=(',', ':'), ensure_ascii=False)
+    json.dump({'method': __doc__.split('Writes')[0].strip(), 'z': Z, 'sources': {k: [p[0][0].isoformat(), p[0][-1].isoformat()] for k, p in parts.items()}, 'series': summary},
+              open(os.path.join(out_dir, 'spacetime.json'), 'w'), indent=1, ensure_ascii=False)
     with open(os.path.join(out_dir, 'areas.geojson'), 'w') as f:
         json.dump({'type': 'FeatureCollection', 'features': [{'type': 'Feature', **json.loads(l)} for l in open(areas_geojsonl)]}, f, separators=(',', ':'), ensure_ascii=False)
-    c.execute("""CREATE TABLE st (series VARCHAR, property VARCHAR, measure VARCHAR, class_grade VARCHAR, area VARCHAR, month DATE, value DOUBLE,
-                 yoy DOUBLE, local_z DOUBLE, significant INTEGER, office_gi_z DOUBLE)""")
-    c.executemany('INSERT INTO st VALUES (?,?,?,?,?,?,?,?,?,?,?)', out)
-    p = os.path.join(out_dir, 'spacetime.parquet'); c.execute(f"COPY (SELECT * FROM st ORDER BY series, month) TO '{p}' (FORMAT parquet, COMPRESSION zstd)")
-    return {'series': len(summary)}
+    c = duckdb.connect()
+    c.execute("""CREATE TABLE st (source VARCHAR, series VARCHAR, place VARCHAR, period DATE, value DOUBLE, yoy DOUBLE, local_z DOUBLE, significant INTEGER, gi_z DOUBLE)""")
+    c.executemany('INSERT INTO st VALUES (?,?,?,?,?,?,?,?,?)', rows)
+    c.execute(f"COPY (SELECT * FROM st ORDER BY source, series, period) TO '{os.path.join(out_dir, 'spacetime.parquet')}' (FORMAT parquet, COMPRESSION zstd)")
+    return {'series': len(summary), **{f'series_{k}': len(p[1][0]) for k, p in parts.items()}}
 
 if __name__ == '__main__':
     # self-check on synthetic series: a clean rise is a significant upward trend; categories behave at the edges

@@ -10,7 +10,12 @@ Writes, in data/out/:
   - tables.json: each table's file, title, source URL and row count
   - areas.parquet: RVD's own area shapes from its CSDI layers (regions, the 18 districts, the office sub-districts), GeoParquet
     EPSG:4326, kept apart because CSDI data comes under the CSDI terms
-  - spacetime.parquet, spacetime.json, spacetime-map.json, areas.geojson: the space-time analysis of rents and prices (spacetime.py)
+  - tps.parquet: every Housing Authority Tenants Purchase Scheme sale (data.gov.hk hk-housing-tpssale-tpssale; 157k since 1998,
+    39 estates): estate, district group, position, price, saleable area (m², ft²), price per m² and ft², floor band, discount
+    rate, date, credit level. Sales to sitting tenants at formula prices, not market sales
+  - lr.parquet: the Land Registry's monthly statistics (data.gov.hk hk-lr-data4-landreg, January 2021 on), every row: deeds by
+    type, agreements for sale and purchase by its 10 districts, residential / non-residential, primary / secondary, price bands
+  - spacetime.parquet, spacetime.json, spacetime-{rvd,tps,lr}.json, areas.geojson: the space-time analysis (spacetime.py)
   - index.json: counts, sizes, source
 Usage: python3 bake.py"""
 import csv, datetime, io, json, os, re, shutil, urllib.parse, urllib.request
@@ -19,6 +24,8 @@ import duckdb
 import sources, spacetime
 
 PACKAGE = 'https://data.gov.hk/en-data/api/3/action/package_show?id=hk-rvd-tsinfo_rvd-property-market-statistics'
+TPS = 'https://data.housingauthority.gov.hk/dataset/hass/tps_sale_transactions_en.json'
+LR_PACKAGE = 'https://data.gov.hk/en-data/api/3/action/package_show?id=hk-lr-data4-landreg'
 CSDI = 'https://portal.csdi.gov.hk/server/rest/services/common'
 AREA_LAYERS = {'domestic': 'rvd_rcd_1631695369038_14075', 'offices': 'rvd_rcd_1631762126297_43900'}   # regions + districts; + office sub-districts
 NULLS = {'', '-', 'n/a', 'na', 'N/A', 'NA', '–'}
@@ -96,6 +103,46 @@ def areas():
                                                                 'area_m2': x['properties'].get('Shape__Area')}, 'geometry': x['geometry']}, ensure_ascii=False) + '\n')
     return p, len(seen)
 
+def split2(v):
+    """'26/284' -> (26.0, 284.0): TPS gives metric/imperial pairs"""
+    a, _, b = str(v or '').partition('/'); return number(a), number(b)
+
+def tps_table(c):
+    """every TPS sale into OUT/tps.parquet; returns the row count"""
+    recs = json.loads(get(TPS).decode('utf-8-sig'))['records']
+    rows = []
+    for r in recs:
+        m2, ft2 = split2(r.get('saleable_floor_area')); pm2, pft2 = split2(r.get('transaction_price_per_sq'))
+        d = (r.get('assignment_date') or '').split('-')
+        rows.append({'estate_name': r.get('estate_name'), 'district_group': r.get('location'), 'lat': number(r.get('estate_map_latitude') or ''), 'lon': number(r.get('estate_map_longitude') or ''),
+                     'price': number(r.get('transaction_price') or ''), 'area_m2': m2, 'area_ft2': ft2, 'price_per_m2': pm2, 'price_per_ft2': pft2,
+                     'floor_level': r.get('floor_level'), 'discount_rate': number(r.get('discount_rate') or ''), 'assignment_date': f'{d[2]}-{d[1]}-{d[0]}' if len(d) == 3 else None,
+                     'credit_level': r.get('credit_level'), 'saleable_floor_area_text': r.get('saleable_floor_area'), 'price_per_sq_text': r.get('transaction_price_per_sq')})
+    tl = os.path.join(sources.CACHE, 'tps.jsonl'); open(tl, 'w').write('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows))
+    pq = os.path.join(sources.OUT, 'tps.parquet')
+    c.execute(f"""COPY (SELECT * REPLACE (TRY_CAST(assignment_date AS DATE) AS assignment_date) FROM read_json('{tl}', format = 'newline_delimited', columns = {{
+                  estate_name: 'VARCHAR', district_group: 'VARCHAR', lat: 'DOUBLE', lon: 'DOUBLE', price: 'DOUBLE', area_m2: 'DOUBLE', area_ft2: 'DOUBLE', price_per_m2: 'DOUBLE',
+                  price_per_ft2: 'DOUBLE', floor_level: 'VARCHAR', discount_rate: 'DOUBLE', assignment_date: 'VARCHAR', credit_level: 'VARCHAR', saleable_floor_area_text: 'VARCHAR',
+                  price_per_sq_text: 'VARCHAR'}}) ORDER BY assignment_date, estate_name) TO '{pq}.part' (FORMAT parquet, COMPRESSION zstd)""")
+    os.replace(pq + '.part', pq); return len(rows)
+
+def lr_table(c):
+    """every row of every monthly Land Registry statistics file on data.gov.hk into OUT/lr.parquet; returns (rows, months)"""
+    urls = [r['url'].replace('http://', 'https://') for r in json.loads(get(LR_PACKAGE))['result']['resources'] if r.get('format') == 'JSON']
+    with cf.ThreadPoolExecutor(4) as ex: docs = list(ex.map(lambda u: (u, json.loads(get(u).decode('utf-8-sig'))), urls))
+    rows = []
+    for u, d in docs:
+        for r in d:
+            cons = next((v for k, v in r.items() if k.startswith('Consideration')), None)
+            rows.append({'year': r['Year'], 'month': r['Month'], 'period_start': f"{r['Year']}-{int(r['Month']):02d}-01", 'description': r['Description'].strip(),
+                         'units': number(str(r.get('Units', ''))), 'consideration_hkd_m': number(str(cons or '')), 'units_text': str(r.get('Units', '')), 'consideration_text': str(cons or ''), 'file': u.rsplit('/', 1)[-1]})
+    tl = os.path.join(sources.CACHE, 'lr.jsonl'); open(tl, 'w').write('\n'.join(json.dumps(r, ensure_ascii=False) for r in rows))
+    pq = os.path.join(sources.OUT, 'lr.parquet')
+    c.execute(f"""COPY (SELECT * REPLACE (CAST(period_start AS DATE) AS period_start) FROM read_json('{tl}', format = 'newline_delimited', columns = {{year: 'INTEGER', month: 'INTEGER',
+                  period_start: 'VARCHAR', description: 'VARCHAR', units: 'DOUBLE', consideration_hkd_m: 'DOUBLE', units_text: 'VARCHAR', consideration_text: 'VARCHAR', file: 'VARCHAR'}})
+                  ORDER BY period_start, description) TO '{pq}.part' (FORMAT parquet, COMPRESSION zstd)""")
+    os.replace(pq + '.part', pq); return len(rows), len(docs)
+
 def main():
     os.makedirs(sources.OUT, exist_ok=True); os.makedirs(sources.CACHE, exist_ok=True)
     files = fetch(); tables, rows = [], []
@@ -119,12 +166,13 @@ def main():
                   ST_GeomFromGeoJSON(geometry::VARCHAR) AS geometry FROM read_json('{ap}', format = 'newline_delimited', columns = {{properties: 'JSON', geometry: 'JSON'}}))
                   TO '{apq}.part' (FORMAT parquet, COMPRESSION zstd)""")
     os.replace(apq + '.part', apq)
-    st = spacetime.run(pq, ap, sources.OUT)
+    n_tps = tps_table(c); n_lr, n_lr_months = lr_table(c)
+    st = spacetime.run(pq, ap, sources.OUT, os.path.join(sources.OUT, 'tps.parquet'), os.path.join(sources.OUT, 'lr.parquet'))
     idx = {'built': datetime.datetime.now().isoformat(timespec='seconds'),
-           'counts': {'tables': len(tables), 'values': len(rows), 'raw_files': len(files), 'areas': n_areas, 'spacetime_series': st['series']},
+           'counts': {'tables': len(tables), 'values': len(rows), 'raw_files': len(files), 'areas': n_areas, 'tps_sales': n_tps, 'lr_rows': n_lr, 'lr_months': n_lr_months, 'spacetime_series': st['series'], **{k: v for k, v in st.items() if k.startswith('series_')}},
            'latest_month': c.execute(f"SELECT max(period_start) FROM '{pq}' WHERE freq = 'M'").fetchone()[0].isoformat(),
-           'MB': {f: round(os.path.getsize(os.path.join(sources.OUT, f)) / 1e6, 2) for f in ('rvd.parquet', 'areas.parquet', 'spacetime.parquet', 'spacetime.json', 'spacetime-map.json', 'areas.geojson')},
-           'source': 'Rating and Valuation Department, Property Market Statistics (data.gov.hk); area shapes from RVD layers on the CSDI Portal'}
+           'MB': {f: round(os.path.getsize(os.path.join(sources.OUT, f)) / 1e6, 2) for f in ('rvd.parquet', 'tps.parquet', 'lr.parquet', 'areas.parquet', 'spacetime.parquet', 'spacetime.json', 'spacetime-rvd.json', 'spacetime-tps.json', 'spacetime-lr.json', 'areas.geojson')},
+           'source': 'Rating and Valuation Department, Property Market Statistics; Housing Authority, TPS sale transactions; Land Registry, monthly statistics (all data.gov.hk); area shapes from RVD layers on the CSDI Portal'}
     json.dump(idx, open(os.path.join(sources.OUT, 'index.json'), 'w'), indent=1)
     print(json.dumps(idx))
 
